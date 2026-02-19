@@ -1,0 +1,44 @@
+# Russian Epub to Audiobook Dependencies
+# For use with Qwen3-TTS Base voice cloning
+
+# Core dependencies
+# Note: Version specified by user environment
+# - Python 3.12
+# - PyTorch 2.9
+# - CUDA 12.x
+# - FlashAttention 2.8.3
+
+# Core
+ebooklib>=0.18
+beautifulsoup4>=4.12
+lxml>=5.0
+pydub>=0.25
+soundfile>=0.12
+tqdm>=4.66
+
+# TTS (Qwen3-TTS)
+# pip install qwen-tts
+
+# For mp3 export
+mutagen>=1.47
+
+# System requirement: ffmpeg must be installed
+
+# ============================================================
+# Recommended installation for GPU environment:
+# ============================================================
+# 
+# # Create conda environment with specific versions
+# conda create -n qwen3-tts python=3.12 pytorch=2.9 cuda-toolkit=12 -y
+# conda activate qwen3-tts
+#
+# # Install FlashAttention 2.8.3
+# pip install flash-attn==2.8.3 --no-build-isolation
+#
+# # Install qwen-tts
+# pip install qwen-tts
+#
+# # Install other dependencies
+# pip install ebooklib beautifulsoup4 lxml pydub soundfile tqdm mutagen
+#
+# ============================================================

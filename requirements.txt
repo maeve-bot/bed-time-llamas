@@ -1,0 +1,15 @@
+# Core dependencies (all steps)
+ebooklib>=0.18
+beautifulsoup4>=4.12
+lxml>=5.0
+pydub>=0.25
+soundfile>=0.12
+tqdm>=4.66
+
+# For TTS synthesis (requires GPU)
+# qwen-tts>=0.1.1  # Uncomment when running on GPU system
+
+# For mp3 export
+mutagen>=1.47
+
+# System requirement: ffmpeg must be installed
