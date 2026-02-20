@@ -5,6 +5,7 @@ Uses voice cloning from a reference audio file instead of built-in speakers.
 
 Requirements:
     pip install ebooklib beautifulsoup4 lxml pydub soundfile tqdm qwen-tts
+    pip install num2words pymorphy3
     
     # Optional for mp3 export:
     pip install mutagen
@@ -152,6 +153,224 @@ def extract_text_from_soup(soup: BeautifulSoup) -> str:
             texts.append(text)
     
     return ' '.join(texts)
+
+
+# =============================================================================
+# TEXT PREPROCESSING
+# =============================================================================
+
+def preprocess_text_v1(text: str) -> str:
+    """Preprocess text to improve TTS pronunciation (basic version).
+    
+    Handles:
+    - Ordinals (1-й, 2-я, 3-е etc.) → Russian ordinal words
+    - Plain integers (years, quantities) → Russian words
+    """
+    import re
+    from num2words import num2words
+    
+    # Handle ordinals: 1-й, 2-я, 3-е etc.
+    ordinal_pattern = re.compile(r'(\d+)(-й|-я|-е|-го|-му|-ой|-ы|-ам|-ах|-ом)')
+    def replace_ordinal(match):
+        num = int(match.group(1))
+        return num2words(num, lang='ru', to='ordinal')
+    
+    text = ordinal_pattern.sub(replace_ordinal, text)
+    
+    # Handle plain integers
+    def replace_number(match):
+        num_str = match.group(0)
+        
+        # Skip phones
+        if '-' in num_str or num_str.startswith('+'):
+            return num_str
+        
+        try:
+            return num2words(int(num_str.replace(' ', '')), lang='ru')
+        except ValueError:
+            return num_str
+    
+    text = re.sub(r'(?<![.\d/+-])\b\d+\b(?![.\d/-])', replace_number, text)
+    
+    return text
+
+
+def preprocess_text_v2(text: str) -> str:
+    """Enhanced number preprocessing with Russian grammar rules (improved version).
+    
+    Handles:
+    - Ordinals (1-й, 2-я, 3-е etc.) → Russian ordinal words
+    - Plain integers (years, quantities) → Russian words
+    - Dates (DD.MM.YYYY, DD/MM/YYYY) → full Russian date format
+    
+    Improvements over v1:
+    - Proper date normalization with correct grammar cases
+    """
+    import re
+    from num2words import num2words
+    
+    # Handle ordinals
+    ordinal_pattern = re.compile(r'(\d+)(-й|-я|-е|-го|-му|-ой|-ы|-ам|-ах|-ом)')
+    def replace_ordinal(match):
+        num = int(match.group(1))
+        return num2words(num, lang='ru', to='ordinal')
+    
+    text = ordinal_pattern.sub(replace_ordinal, text)
+    
+    # Handle dates: DD.MM.YYYY or DD/MM/YYYY
+    def replace_date(match):
+        date_str = match.group(0)
+        parts = re.split(r'[.\s/]+', date_str)
+        
+        if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+            try:
+                day = int(parts[0])
+                month = int(parts[1])
+                year = int(parts[2])
+                
+                # Day: neuter ordinal for dates
+                day_word = num2words(day, lang='ru', to='ordinal')
+                if day_word.endswith('ый'):
+                    day_word = day_word[:-2] + 'ое'
+                elif day_word.endswith('ий'):
+                    day_word = day_word[:-2] + 'ое'
+                
+                # Month: genitive case
+                months = ['', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                         'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+                month_word = months[month] if 1 <= month <= 12 else parts[1]
+                
+                # Handle 2-digit years
+                if year < 100:
+                    year += 1900 if year > 50 else 2000
+                
+                year_word = num2words(year, lang='ru')
+                
+                return f'{day_word} {month_word} {year_word} года'
+            except (ValueError, IndexError):
+                pass
+        
+        return date_str
+    
+    text = re.sub(r'\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b', replace_date, text)
+    
+    # Handle plain integers
+    def replace_number(match):
+        num_str = match.group(0)
+        if '-' in num_str or num_str.startswith('+'):
+            return num_str
+        try:
+            return num2words(int(num_str.replace(' ', '')), lang='ru')
+        except ValueError:
+            return num_str
+    
+    text = re.sub(r'(?<![.\d/+-])\b\d+\b(?![.\d/-])', replace_number, text)
+    
+    return text
+
+
+def preprocess_text(text: str) -> str:
+    """Advanced number preprocessing with pymorphy3 for proper Russian grammar.
+    
+    Handles:
+    - Ordinals (1-й, 2-я, 3-е etc.) → Russian ordinal words
+    - Dates (DD.MM.YYYY) → full Russian date format
+    - Years (в 1985 году) → ordinal + locative case
+    - Chapters (Глава 15) → feminine ordinals
+    - Plain integers → Russian words
+    
+    Requires: pip install pymorphy3 num2words
+    """
+    import re
+    import pymorphy3
+    from num2words import num2words
+    
+    morph = pymorphy3.MorphAnalyzer()
+    
+    # 1. Handle ordinals: 1-й, 2-я etc.
+    ordinal_pattern = re.compile(r'(\d+)(-й|-я|-е|-го|-му|-ой|-ы|-ам|-ах|-ом)')
+    text = ordinal_pattern.sub(lambda m: num2words(int(m.group(1)), lang='ru', to='ordinal'), text)
+    
+    # 2. Handle dates: DD.MM.YYYY or DD/MM/YYYY
+    def replace_date(match):
+        parts = re.split(r'[.\s/]+', match.group(0))
+        if len(parts) >= 3 and all(p.isdigit() for p in parts[:3]):
+            try:
+                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                day_word = num2words(day, lang='ru', to='ordinal')
+                if day_word.endswith('ый'):
+                    day_word = day_word[:-2] + 'ое'
+                elif day_word.endswith('ий'):
+                    day_word = day_word[:-2] + 'ое'
+                months = ['', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                         'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+                month_word = months[month] if 1 <= month <= 12 else parts[1]
+                if year < 100:
+                    year += 1900 if year > 50 else 2000
+                return f'{day_word} {month_word} {num2words(year, lang="ru")} года'
+            except:
+                pass
+        return match.group(0)
+    
+    text = re.sub(r'\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b', replace_date, text)
+    
+    # 3. Handle years: 'в 1985 году' -> ordinal in locative case
+    year_pattern = re.compile(r'в\s+(\d{4})\s*(году?|года)?', re.IGNORECASE)
+    def replace_year(match):
+        year = int(match.group(1))
+        ord_year = num2words(year, lang='ru', to='ordinal')
+        
+        parsed = morph.parse(ord_year)[0]
+        try:
+            loc = parsed.inflect({'sing', 'loct'})
+            if loc:
+                ord_year = loc.word
+            else:
+                if ord_year.endswith('ый'):
+                    ord_year = ord_year[:-2] + 'ом'
+                elif ord_year.endswith('ий'):
+                    ord_year = ord_year[:-2] + 'ем'
+        except:
+            if ord_year.endswith('ый'):
+                ord_year = ord_year[:-2] + 'ом'
+        
+        return f'в {ord_year} году'
+    
+    text = year_pattern.sub(replace_year, text)
+    
+    # 4. Handle chapters: 'Глава 15' -> feminine ordinal
+    chapter_pattern = re.compile(r'Глава\s+(\d+)', re.IGNORECASE)
+    def replace_chapter(match):
+        num = int(match.group(1))
+        num_word = num2words(num, lang='ru', to='ordinal')
+        parsed = morph.parse(num_word)[0]
+        try:
+            fem = parsed.inflect({'sing', 'femn', 'nomn'})
+            if fem:
+                return 'Глава ' + fem.word
+        except:
+            pass
+        return 'Глава ' + num_word
+    
+    text = chapter_pattern.sub(replace_chapter, text)
+    
+    # 5. Handle plain numbers
+    def replace_number(match):
+        num_str = match.group(0)
+        if '-' in num_str or num_str.startswith('+'):
+            return num_str
+        try:
+            return num2words(int(num_str.replace(' ', '')), lang='ru')
+        except ValueError:
+            return num_str
+    
+    text = re.sub(r'(?<![.\d/+-])\b\d+\b(?![.\d/-])', replace_number, text)
+    
+    return text
+
+
+# Use v3 (with pymorphy3) as default - best grammar handling
+preprocess_text = preprocess_text
 
 
 # =============================================================================
@@ -453,8 +672,11 @@ def synthesize_book(
     )
     
     for chapter in tqdm.tqdm(book.chapters, desc="Chapters"):
+        # Preprocess text (convert numbers to words)
+        processed_text = preprocess_text(chapter.text)
+        
         # Chunk text
-        chunks = chunk_text(chapter.text)
+        chunks = chunk_text(processed_text)
         
         # Synthesize
         audio, sr = engine.synthesize_chunks(chunks)
