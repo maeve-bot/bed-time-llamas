@@ -59,8 +59,10 @@ from ebooklib import epub, ITEM_DOCUMENT, ITEM_COVER
 SAMPLE_RATE = 24000
 MAX_CHUNK_SIZE = 500  # chars per chunk
 SENTENCE_PAUSE_MS = 600  # pause between sentences
-PARAGRAPH_PAUSE_MS = 1000  # pause between paragraphs
+PARAGRAPH_PAUSE_MS = 900  # pause between paragraphs
+TITLE_PAUSE_MS = 1200  # pause after chapter title
 PARA_MARKER = "{PARA}"  # marker for paragraph boundaries
+TITLE_MARKER = "{TITLE}"  # marker for chapter titles
 
 # Content extraction config
 CONTENT_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th"]
@@ -170,6 +172,9 @@ def extract_text_from_soup(soup: BeautifulSoup) -> str:
             continue
         text = tag.get_text(strip=True)
         if text:
+            # Add title marker for h1-h3
+            if tag.name in ['h1', 'h2', 'h3']:
+                text = f'{TITLE_MARKER} {text}'
             texts.append(text)
     
     # Join paragraphs with marker
@@ -420,11 +425,17 @@ def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[Chunk]:
         if not paragraph:
             continue
         
+        # Check for title marker
+        is_title = paragraph.startswith(TITLE_MARKER)
+        if is_title:
+            paragraph = paragraph[len(TITLE_MARKER):].strip()
+        
         # Split paragraph by sentences
         sentences = SENTENCE_ENDINGS.split(paragraph)
         
         current_chunk = []
         current_length = 0
+        title_handled = False  # Track if we've already emitted the title pause
         
         for sent_idx, sentence in enumerate(sentences):
             sentence = sentence.strip()
@@ -436,9 +447,14 @@ def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[Chunk]:
             # If current chunk + new sentence is too big, finish current chunk
             if current_length + sentence_len > max_size and current_chunk:
                 chunk_text = " ".join(current_chunk)
-                # Determine pause type: paragraph if it's the last chunk in paragraph
-                is_last_in_para = (sent_idx == len(sentences) - 1) and (para_idx < len(paragraphs) - 1)
-                pause_after = "paragraph" if is_last_in_para else "sentence"
+                # Determine pause type: title > paragraph > sentence
+                if is_title and not title_handled:
+                    pause_after = "title"
+                    title_handled = True
+                elif is_last_in_para := (sent_idx == len(sentences) - 1) and (para_idx < len(paragraphs) - 1):
+                    pause_after = "paragraph"
+                else:
+                    pause_after = "sentence"
                 all_chunks.append(Chunk(text=chunk_text, pause_after=pause_after))
                 current_chunk = []
                 current_length = 0
@@ -474,7 +490,13 @@ def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[Chunk]:
             chunk_text = " ".join(current_chunk)
             # If this isn't the last paragraph, it's a paragraph boundary
             is_last_para = (para_idx == len(paragraphs) - 1)
-            pause_after = "none" if is_last_para else "paragraph"
+            # Determine pause: title > paragraph > none
+            if is_title and not title_handled:
+                pause_after = "title"
+            elif is_last_para:
+                pause_after = "none"
+            else:
+                pause_after = "paragraph"
             all_chunks.append(Chunk(text=chunk_text, pause_after=pause_after))
     
     return all_chunks
@@ -503,7 +525,9 @@ def concatenate_audio(
             # Determine pause based on pause_after
             pause_type = chunks[i].pause_after
             
-            if pause_type == "paragraph":
+            if pause_type == "title":
+                pause_ms = TITLE_PAUSE_MS
+            elif pause_type == "paragraph":
                 pause_ms = PARAGRAPH_PAUSE_MS
             else:  # sentence or none
                 pause_ms = SENTENCE_PAUSE_MS
