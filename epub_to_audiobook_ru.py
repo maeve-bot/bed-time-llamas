@@ -822,7 +822,7 @@ def main():
     parser.add_argument("epub", help="Path to epub file")
     parser.add_argument("-o", "--output", default="./output", help="Output directory")
     parser.add_argument("--voice-ref", dest="voice_ref", help="Path to reference audio file (.wav) for voice cloning")
-    parser.add_argument("--ref-text", dest="ref_text", help="Text spoken in the reference audio")
+    parser.add_argument("--ref-text", dest="ref_text", help="Text spoken in the reference audio, or path to a .txt file containing the text")
     parser.add_argument("-s", "--speaker", help="Speaker name (for built-in voices, use CustomVoice model instead)")
     parser.add_argument("-l", "--language", default="Russian", help="Language")
     parser.add_argument("-d", "--device", default="cuda", help="Device (cuda or cpu)")
@@ -832,6 +832,14 @@ def main():
     parser.add_argument("--model", default="Qwen/Qwen3-TTS-12Hz-1.7B-Base", help="Model name")
     
     args = parser.parse_args()
+    
+    # Handle ref-text: either direct text or read from file
+    if args.ref_text:
+        ref_text_path = Path(args.ref_text)
+        if ref_text_path.exists():
+            # Read from file
+            args.ref_text = ref_text_path.read_text(encoding='utf-8').strip()
+            print(f"Loaded reference text from: {ref_text_path}")
     
     # Validate inputs
     if not Path(args.epub).exists():
