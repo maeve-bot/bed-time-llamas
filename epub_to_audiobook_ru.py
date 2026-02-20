@@ -146,6 +146,10 @@ def extract_text_from_soup(soup: BeautifulSoup) -> str:
     for tag in soup(SKIP_TAGS):
         tag.decompose()
     
+    # Replace <br> with paragraph marker to preserve line breaks
+    for br in soup.find_all('br'):
+        br.replace_with(BeautifulSoup(PARA_MARKER, 'html.parser'))
+    
     texts = []
     
     # Handle lists - flatten nested structure, each <li> becomes a paragraph
