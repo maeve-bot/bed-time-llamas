@@ -120,7 +120,7 @@ def parse_epub(epub_path: str | Path) -> tuple[Book, Optional[bytes]]:
     
     for item in book.get_items():
         if item.get_type() == ITEM_DOCUMENT:
-            soup = BeautifulSoup(item.get_content(), 'lxml')
+            soup = BeautifulSoup(item.get_content(), 'xml')
             text = extract_text_from_soup(soup)
             
             if text:
