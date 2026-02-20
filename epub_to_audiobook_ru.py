@@ -146,10 +146,24 @@ def extract_text_from_soup(soup: BeautifulSoup) -> str:
     for tag in soup(SKIP_TAGS):
         tag.decompose()
     
-    # Extract text from content tags, preserving paragraph structure
-    # Each <p>, <div>, etc. becomes a paragraph
     texts = []
-    for tag in soup.find_all(CONTENT_TAGS):
+    
+    # Handle lists - flatten nested structure, each <li> becomes a paragraph
+    for lst in soup.find_all(['ul', 'ol']):
+        for li in lst.find_all('li', recursive=True):
+            # Skip if this <li> has child <li> elements (they'll be processed separately)
+            if li.find(['ul', 'ol']):
+                continue
+            text = li.get_text(strip=True)
+            if text:
+                texts.append(text)
+    
+    # Extract text from other content tags (excluding li, which we handled above)
+    other_tags = [t for t in CONTENT_TAGS if t != 'li']
+    for tag in soup.find_all(other_tags):
+        # Skip if this tag is inside a list (already handled)
+        if tag.find_parent(['ul', 'ol']):
+            continue
         text = tag.get_text(strip=True)
         if text:
             texts.append(text)
