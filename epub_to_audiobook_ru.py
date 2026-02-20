@@ -58,8 +58,9 @@ from ebooklib import epub, ITEM_DOCUMENT, ITEM_COVER
 
 SAMPLE_RATE = 24000
 MAX_CHUNK_SIZE = 500  # chars per chunk
-PARAGRAPH_PAUSE_MS = 500
-CHAPTER_PAUSE_MS = 1000
+SENTENCE_PAUSE_MS = 600  # pause between sentences
+PARAGRAPH_PAUSE_MS = 1000  # pause between paragraphs
+PARA_MARKER = "{PARA}"  # marker for paragraph boundaries
 
 # Content extraction config
 CONTENT_TAGS = ["p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "td", "th"]
@@ -140,19 +141,21 @@ def parse_epub(epub_path: str | Path) -> tuple[Book, Optional[bytes]]:
 
 
 def extract_text_from_soup(soup: BeautifulSoup) -> str:
-    """Extract text from HTML, removing unwanted tags."""
+    """Extract text from HTML, preserving paragraph boundaries."""
     # Remove unwanted elements
     for tag in soup(SKIP_TAGS):
         tag.decompose()
     
-    # Extract text from content tags
+    # Extract text from content tags, preserving paragraph structure
+    # Each <p>, <div>, etc. becomes a paragraph
     texts = []
     for tag in soup.find_all(CONTENT_TAGS):
-        text = tag.get_text(separator=' ', strip=True)
+        text = tag.get_text(strip=True)
         if text:
             texts.append(text)
     
-    return ' '.join(texts)
+    # Join paragraphs with marker
+    return f' {PARA_MARKER} '.join(texts)
 
 
 # =============================================================================
@@ -377,55 +380,86 @@ preprocess_text = preprocess_text
 # TEXT CHUNKING
 # =============================================================================
 
-def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
-    """Split text into chunks at sentence boundaries, force-splitting if needed."""
-    sentences = SENTENCE_ENDINGS.split(text)
+@dataclass
+class Chunk:
+    text: str
+    pause_after: str  # "sentence", "paragraph", or "none"
+    audio: any = None  # will hold numpy array after synthesis
+
+
+def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[Chunk]:
+    """Split text into chunks at sentence and paragraph boundaries.
     
-    chunks = []
-    current_chunk = []
-    current_length = 0
+    Returns list of Chunks with pause_after indicating the pause type.
+    """
+    # First split by paragraph marker
+    paragraphs = text.split(PARA_MARKER)
     
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
+    all_chunks = []
+    
+    for para_idx, paragraph in enumerate(paragraphs):
+        paragraph = paragraph.strip()
+        if not paragraph:
             continue
         
-        sentence_len = len(sentence)
+        # Split paragraph by sentences
+        sentences = SENTENCE_ENDINGS.split(paragraph)
         
-        # If current chunk + new sentence is too big, finish current chunk
-        if current_length + sentence_len > max_size and current_chunk:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = []
-            current_length = 0
+        current_chunk = []
+        current_length = 0
         
-        # If single sentence is still too big, force split it
-        if sentence_len > max_size:
-            words = sentence.split()
-            current_word_chunk = []
-            current_word_len = 0
+        for sent_idx, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
             
-            for word in words:
-                word_len = len(word)
-                if current_word_len + word_len + 1 > max_size:
-                    chunks.append(" ".join(current_word_chunk))
-                    current_word_chunk = []
-                    current_word_len = 0
-                current_word_chunk.append(word)
-                current_word_len += word_len + 1
+            sentence_len = len(sentence)
             
-            if current_word_chunk:
-                remainder = " ".join(current_word_chunk)
-                current_chunk.append(remainder)
-                current_length += len(remainder) + 1
-            continue
+            # If current chunk + new sentence is too big, finish current chunk
+            if current_length + sentence_len > max_size and current_chunk:
+                chunk_text = " ".join(current_chunk)
+                # Determine pause type: paragraph if it's the last chunk in paragraph
+                is_last_in_para = (sent_idx == len(sentences) - 1) and (para_idx < len(paragraphs) - 1)
+                pause_after = "paragraph" if is_last_in_para else "sentence"
+                all_chunks.append(Chunk(text=chunk_text, pause_after=pause_after))
+                current_chunk = []
+                current_length = 0
+            
+            # If single sentence is still too big, force split it
+            if sentence_len > max_size:
+                words = sentence.split()
+                current_word_chunk = []
+                current_word_len = 0
+                
+                for word in words:
+                    word_len = len(word)
+                    if current_word_len + word_len + 1 > max_size:
+                        chunk_text = " ".join(current_word_chunk)
+                        # Inside a force-split sentence, all are sentence pauses
+                        all_chunks.append(Chunk(text=chunk_text, pause_after="sentence"))
+                        current_word_chunk = []
+                        current_word_len = 0
+                    current_word_chunk.append(word)
+                    current_word_len += word_len + 1
+                
+                if current_word_chunk:
+                    remainder = " ".join(current_word_chunk)
+                    current_chunk.append(remainder)
+                    current_length += len(remainder) + 1
+                continue
+            
+            current_chunk.append(sentence)
+            current_length += sentence_len + 1
         
-        current_chunk.append(sentence)
-        current_length += sentence_len + 1
+        # Don't forget the last chunk in the paragraph
+        if current_chunk:
+            chunk_text = " ".join(current_chunk)
+            # If this isn't the last paragraph, it's a paragraph boundary
+            is_last_para = (para_idx == len(paragraphs) - 1)
+            pause_after = "none" if is_last_para else "paragraph"
+            all_chunks.append(Chunk(text=chunk_text, pause_after=pause_after))
     
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-    
-    return chunks
+    return all_chunks
 
 
 # =============================================================================
@@ -433,22 +467,32 @@ def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
 # =============================================================================
 
 def concatenate_audio(
-    audio_arrays: list,
+    chunks: list,
     sample_rate: int = SAMPLE_RATE,
-    pause_ms: int = PARAGRAPH_PAUSE_MS
 ) -> list:
-    """Concatenate audio arrays with silence between them."""
+    """Concatenate audio arrays with variable pauses based on chunk metadata."""
     import numpy as np
     
-    # Create pause
-    pause_samples = int(sample_rate * pause_ms / 1000)
-    pause = np.zeros(pause_samples, dtype=np.float32)
-    
     result = []
-    for i, audio in enumerate(audio_arrays):
-        if i > 0:
+    
+    for i, chunk in enumerate(chunks):
+        # chunk.audio is the audio numpy array
+        # chunk.pause_after tells us what pause to add
+        
+        result.append(chunk.audio)
+        
+        if i < len(chunks) - 1:
+            # Determine pause based on pause_after
+            pause_type = chunks[i].pause_after
+            
+            if pause_type == "paragraph":
+                pause_ms = PARAGRAPH_PAUSE_MS
+            else:  # sentence or none
+                pause_ms = SENTENCE_PAUSE_MS
+            
+            pause_samples = int(sample_rate * pause_ms / 1000)
+            pause = np.zeros(pause_samples, dtype=np.float32)
             result.append(pause)
-        result.append(audio)
     
     return np.concatenate(result)
 
@@ -523,18 +567,21 @@ class QwenTTSEngine:
         
         return wavs[0], sr
     
-    def synthesize_chunks(self, chunks: list[str]) -> tuple:
-        """Synthesize multiple chunks and concatenate."""
+    def synthesize_chunks(self, chunks: list[Chunk]) -> tuple:
+        """Synthesize multiple chunks and concatenate with variable pauses."""
         import numpy as np
         
         self._load_model()
         
-        audio_chunks = []
+        # Collect text from chunks for batch synthesis
+        chunk_texts = [chunk.text for chunk in chunks]
         
         # Batch synthesis for efficiency
         batch_size = 16
-        for i in tqdm.tqdm(range(0, len(chunks), batch_size), desc="Synthesizing", unit="batch"):
-            batch_texts = chunks[i:i + batch_size]
+        audio_results = []
+        
+        for i in tqdm.tqdm(range(0, len(chunk_texts), batch_size), desc="Synthesizing", unit="batch"):
+            batch_texts = chunk_texts[i:i + batch_size]
             
             if self.voice_ref_audio:
                 wavs, sr = self._model.generate_voice_clone(
@@ -553,10 +600,14 @@ class QwenTTSEngine:
                 elif len(wavs.shape) > 1:
                     wavs = list(wavs)
             
-            audio_chunks.extend(wavs)
+            audio_results.extend(wavs)
         
-        # Concatenate with pauses
-        final_audio = concatenate_audio(audio_chunks, sr, PARAGRAPH_PAUSE_MS)
+        # Attach audio to chunks
+        for i, chunk in enumerate(chunks):
+            chunk.audio = audio_results[i]
+        
+        # Concatenate with variable pauses
+        final_audio = concatenate_audio(chunks, sr)
         
         return final_audio, sr
 
